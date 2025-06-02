@@ -1,0 +1,29 @@
+services:
+  app:
+    build: ../
+    env_file: ../.env
+    depends_on:
+      db:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: rebuild
+          path: ../
+  db:
+    image: mysql:latest
+    env_file: ./mysql/.env
+    expose:
+      - "3306"
+    volumes:
+      - "./mysql/init:/docker-entrypoint-initdb.d"
+      - "search_engine_db:/var/lib/mysql"
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+volumes:
+  search_engine_db:
+
+networks:
+  default:
+    name: "biosearch-network"

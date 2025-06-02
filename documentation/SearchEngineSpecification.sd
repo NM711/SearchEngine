@@ -1,0 +1,191 @@
+@h4 Document Meta
+@paragraph
+
+Since the renderer hasnt bee updated to the newest grammar that introduces meta tags, i will add the tags under this paragraph.
+[author, "Nathan Monroy"]
+[title, "Search Engine Specification"]
+[description, "Search engine made for learning purposes, contributors welcome!"]
+
+@h1 Specification
+
+@h2 Outline
+
+@paragraph
+
+First we will outline the three major components any search engine needs.
+Then I will go somewhat in depth about what each component should be doing and lastly,
+I will expand on the technology stack used.
+
+@h3 Components
+
+@list
+	1. The Crawler
+	2. Index
+	3. Ranking Algorithm
+
+@paragraph
+The crawler as the name implies, will work torwards crawling web pages, this involves checking
+the health of web resources, indexing web resources and relatetd, in a autonomous manner.
+
+@paragraph
+The index will be the database engine that allows us to efficiently retrieved crawled data
+for later use, this is vital for both the crawler and the ranking algorithm as they both
+depend on the index, to perform their jobs efficiently.
+
+@paragraph
+The ranking algorithm is an algorithm that allows us to retreive resources and its dependants
+from the index based on how the algorithms ranked the indexed informations.
+
+
+@h2 The Crawler
+
+@paragraph
+Here the crawlers algorithm will be detailed.
+In theory the crawler sounds like the easiest component to implement within the engine,
+and it technically is but that does not mean it doesnt share its bit of complexity.
+
+@bi[*NOTICE* that when I say resources it can mean the resource itself (as a whole) or its routes (dependants)]
+
+@list
+1. The crawler grabs a batch of resources from the index, these resources will be aquired
+in the following manner. The ones with the highest priorities will be resources that have not been
+visited yet, those that have been merely indexed. If all resources have been indexed and visited we fall back
+and aquire a batch of resources whose last_crawled field is earliest or oldest.
+
+2. Upon aquiring a batch of resources we begin building links, we only want to persist resources
+that are https protected. The crawler will grab those resources and begin building https urls.
+If the https url is invalid due to cert issues the error will be logged and the resource will be marked with a grace period,
+of 7 days.
+
+The same idea will apply for resources that end up returning 4xx or 5xx errors, they will be flagged
+and granted a grace period before removal.
+
+3. If crawler receives certain errors that may hinder the performance of the server or may cause it to be blocked.
+\\423, 500, etc. The crawler will slow down, we can achieve this with a database flag within the Resource table.
+We may also build a ResourceError table where we put the grace period and the error code that we are working with, for the resource in question.
+
+4. If a grace period is not required and a resource status is ok, we simply proceed to begin
+crawling for a[href] tags. Every href tag will get added as a new last_crawled NULL resource
+within the database. If the href tag points to the same domain as the resource we are currently
+crawling, the href tag will have its route stripped and the route will be used as a dependant
+of the current resource, ResourceRoute will also have a last_crawled field that will be set to NULL.
+
+5. Similarly when crawling for page links, we need to build a resource title and description
+before saving the entry into the database. The crawler will have a seperate parseMeta() function
+that will be called to parse titles, meta elements, and if non of that exists, it will fallback
+to parsing <h1> or <p> elements that are at the top of the page (first comes first serves).
+
+In the future though, it would be cool if we could grab all the content from a page, process it. And decide what should be used as the
+@bold[ideal] description. But for now we shall keep it primitive.
+
+@h2 The Index
+
+@paragraph
+
+Here I shall outline the database schema, and maybe some retrieval processes.
+
+
+@list
+	* The resource table will be used in order to index web domains for crawling purposes, since the crawler wont batch Resources themselves
+	unless they havent been crawled before, we simply use a status to identify whether it has been crawled before or not.
+	If it hasnt been crawled before it will be visited, and crawled as a priority resource within a batch of resources.
+	@code ["sql"]
+<<
+	CREATE TABLE `Resource` (
+		id INTEGER AUTO_INCREMENT NOT NULL PRIMARY KEY,
+		full_domain VARCHAR(253) NOT NULL UNIQUE,
+		last_crawled TIMESTAMP DEFAULT NULL,
+		status ENUM('DISCOVERED', 'CRAWLED'),
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	);
+>>
+	* The resource route table will be used to track routes related to a resource. It will save some basic information
+	like the amount of visits to the route, a last crawled date, description, title, and hopefully in the future some more meta data.
+	@code ["sql"]
+<<
+	CREATE TABLE `ResourceRoute` (
+		id INTEGER AUTO_INCREMENT NOT NULL PRIMARY KEY,
+		resource_id INTEGER NOT NULL,
+		route_path VARCHAR(2000) NOT NULL,
+		title VARCHAR(125) NOT NULL,
+		description VARCHAR(175) DEFAULT NULL,
+		visit_count INTEGER NOT NULL DEFAULT 0,
+		last_crawled TIMESTAMP DEFAULT NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		FOREIGN KEY (`resource_id`) REFERENCES `Resource`(`id`) ON DELETE CASCADE
+	);
+>>
+
+	* The resource route error table will be used to track whether a route is undergoing an error that will hinder the search for relevant resources.
+	500, 404, 523, etc. If any 4xx or 5xx error occurs, the resource route error will track it. This is also where the grace period of a certain
+	route will be if the error does not go away. When the grace period ends, the route will be scheduled for elimination.
+	@code ["sql"]
+<<
+
+	CREATE TABLE ResourceRouteError (
+		id INTEGER AUTO_INCREMENT NOT NULL PRIMARY KEY,
+		resource_route_id INTEGER NOT NULL UNIQUE,
+		status_code SMALLINT NOT NULL,
+		grace_period TIMESTAMP NOT NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		FOREIGN KEY (`resource_route_id`) REFERENCES `ResourceRoute`(`id`) ON DELETE CASCADE
+	);
+>>
+
+	* The resource reference table will be used to track the number of references between resources, this will be used during the ranking process.
+	If a resource is being referenced a lot by other resources, it means that in a way, this resources is vital to our web. It should naturally
+	be placed at a higher rank than average. This is just one factor of the ranking algorithm, there will be more.
+	@code ["sql"]
+<<
+	CREATE TABLE `ResourceReference` (
+		resource_referenced_id INTEGER NOT NULL,
+		resource_referencer_id INTEGER NOT NULL,
+		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		FOREIGN KEY (`resource_referenced_id`) REFERENCES `Resource`(`id`) ON DELETE CASCADE,
+		FOREIGN KEY (`resource_referencer_id`) REFERENCES `Resource`(`id`) ON DELETE CASCADE,
+		PRIMARY KEY (`resource_referenced_id`, `resource_referencer_id`)
+	);
+>>
+
+
+@h3 Ranking Algorithm - BM25 Reference Variation
+
+@paragraph
+@link[@bold[BM25 WIKIPEDIA SOURCE], "https://en.wikipedia.org/wiki/Okapi_BM25"]
+
+@paragraph
+1. Given a query (Q) with an Q(n) amount of keywords, we need to match them against a document D.
+A document can represent a text field within the ResourceRoute record, title, description, etc.
+My take is that we compute a seperate score for each field and perform a sum, so titleScore + descScore = Score.
+
+So to reitarate the first step here is to compute the total matches of keywords between document and query.
+
+For example take the query "How do I learn programming?", and take the description
+"Prorgramming is a learnable and very in demand field."
+
+
+@h3 Example:
+   @list
+         * Q"learn" -> D"learnable" (If following a minimum munch during tokenization)
+         * Q"programming" -> D"Programming"
+
+
+So the output of the match function would be a hash map containing the keyword and frequency, e.g:
+
+@code <<  return { "learn": 1, "programming": 1 }  >>
+This all ultimately represent the f(q[i], D) found within the formula.
+
+
+@paragraph
+@bold[IN THE WORKS]	
+	
+@h3 Technology Stack
+
+@list
+* Application will be written in GoLang
+* Index will be a MySQL database
+* Application will be developed and deployed in docker.
