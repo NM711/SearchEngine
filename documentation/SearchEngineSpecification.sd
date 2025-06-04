@@ -1,6 +1,5 @@
 @h4 Document Meta
 @paragraph
-
 Since the renderer hasnt bee updated to the newest grammar that introduces meta tags, i will add the tags under this paragraph.
 [author, "Nathan Monroy"]
 [title, "Search Engine Specification"]
@@ -152,7 +151,7 @@ Here I shall outline the database schema, and maybe some retrieval processes.
 >>
 
 
-@h3 Ranking Algorithm - BM25 Reference Variation
+@h2 Ranking Algorithm - BM25 Reference Variation
 
 @paragraph
 @link[@bold[BM25 WIKIPEDIA SOURCE], "https://en.wikipedia.org/wiki/Okapi_BM25"]
@@ -181,9 +180,129 @@ This all ultimately represent the f(q[i], D) found within the formula.
 
 
 @paragraph
-@bold[IN THE WORKS]	
+
+2. So onto the next parameters found within the formula, @bold[k] is a tuner for how much word frequency matters within the score, typically
+this is any number from a range of 1.2 to 2.0.
+Next @bold[b] is a tuner that controls how much the length of a document matters, longer documents get penalized. It makes sense cos longer
+descriptions can technically have an unfair advantage over smaller descriptions, so it makes sense to penalize their search score, similarly
+this variable is typically given a value of 0.75.
+
+@paragraph
+
+3. IDF (Inverse Document Frequency) function @italic[IDF(q[i])] serves as the mechanism that measures the importance of words within a batch of documents.
+This is in a way the heart of the search mechanism since it weights the relevancy of documents within a data set. It is similar to the bag of words function
+described earlier, but in this case it finds the rarest keywords within the entire data set. As I understand at the very least, this could be corrected in the future.
+
+
+@paragraph
+
+4. Lastly we add a personal sprinkle to weight the relevancy of documents, I suppose we could do this by taking the count of references from other resources
+to the document in question, or the source of the document in question. In order to not mess with the underlying algorithm
+I think we will add a multiplier based on @italic[authority] and @italic[importance] of certain resources within our web. It wont be much, say a constant number of
+1.2 for now and we will tweak it as needed.
+
+@h3 Pseudocode to Wrap Up
+
+@code
+<<
+	// Trigger a stored procedure or use sql aggregation functions that return the length of these documents.
+	// Then we can just compute the average
+	function compute_avg_doc_length(): int;
+
+	// Maybe from a dbms service, maybe from a file, etc.
+	function get_documents(): D[];
+
+	// We would probably offload some compute to the DB engine, but if not we would have to do smth like this.
+	function compute_idf(term): int;
+	function comptue_idf(documents, term): int {
+		let docsContainingTerm = 0
+		
+		for each document of documents {
+			for each word of document.toLowerCase().split(" ") {
+					if (word == term) {
+						docsContainingTerm += 1
+					}
+
+			}	
+		}
 	
-@h3 Technology Stack
+		const numerator = documents.length - docsContainingTerm + 0.5
+		const denominator = docsContainingTerm + 0.5
+		return Math.log(numerator / denominator + 1)	
+	}
+	
+	function compute_word_frequency_map(docWords, queryTerms): Map<string, int> {
+		const freqMap = new Map()
+
+		// I was thinking of minimum munching, but idk how viable of an option this is.
+		// It is also kinda expensive computationally
+				
+		for each word of docWords {
+			for each term of queryTerms {
+				if (word == term) {
+					const frequency = freqMap.get(term) || 0
+					freqMap.set(term, frequency + 1)
+				}
+			}
+		}
+
+		return freqMap
+	}
+	
+	function compute_bm25_refmod_score(query) {
+		// this is b
+		const DOC_LENGTH_TUNER = 0.75;
+		// this is k
+		const WORD_FREQ_TUNER = 1.3
+		
+		const documents = get_documents()
+		const scoredDocuments = []
+
+
+		
+		for each document of documents {
+			const docWords = document.toLowerCase().split(" ")
+			const queryTerms = query.toLowerCase().split(" ")
+			const frequencyMap = compute_word_frequency_map(docWords, queryTerms)
+			let totalScore = 0
+			
+			for each term of queryTerms {
+				const frequency = frequencyMap.get(term)
+				const numerator = frequency * (WORD_FREQ_TUNER + 1)
+				const denominator = frequency + WORD_FREQ_TUNER * (1 - DOC_LENGTH_TUNER + DOC_LENGTH_TUNER * (document.length / compute_avg_doc_length()))
+
+
+				totalScore += compute_idf(term, documents) * (numerator / denominator)
+			}
+
+			// Compute Authority Boost
+			
+			const refs = get_resource_references(document.url)
+
+			const BASE_MULTIPLIER = 1.2
+			let authorityMultiplier = BASE_MULTIPLIER;
+			
+			for each ref of refs {
+				authorityMultiplier += 0.01;
+			}
+
+			totalScore = totalScore * authorityMultiplier;
+			
+			const scoredDocument = { document, totalScore }
+			
+			scoredDocuments.push({document, score: totalScore })
+		}
+
+		return scoredDocuments;
+	}
+>>
+
+@paragraph
+
+@bold[NOTE]: THAT THIS IS JUST A VERY ROUGH PSEUDOCODE EXAMPLE, I ONLY CARED ABOUT OUTLINING THE GENERAL IMPLEMENTATION AND DID NOT
+OPTIMIZE OR ANYTHING LIKE THAT. OPTIMIZATIONS SHOULD OCCUR DURING THE ACTUAL IMPLEMENTATION.
+
+@h2 Technology Stack
 
 @list
 * Application will be written in GoLang
